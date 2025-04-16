@@ -1,0 +1,660 @@
+# Project: Detailed Deep Learning Image Classification with CIFAR-10
+# File: detailed_cifar10.py
+# This script is a comprehensive and detailed deep learning project using PyTorch.
+# It covers data downloading, augmentation, custom dataset handling, model definition,
+# training with detailed logging and checkpointing, evaluation, and advanced retraining.
+#
+# Author: [Your Name]
+# Date: [Today's Date]
+#
+# ==========================================================
+# Import libraries and set up configurations
+# ==========================================================
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader, Subset, Dataset
+from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+import time
+import copy
+import random
+
+# ==========================================================
+# Reproducibility: Setting Seeds
+# ==========================================================
+seed = 42
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
+
+# ==========================================================
+# Global Configurations and Hyperparameters
+# ==========================================================
+NUM_CLASSES = 10                  # There are 10 classes in CIFAR-10
+BATCH_SIZE = 128                  # Batch size for training and validation
+NUM_EPOCHS = 50                   # Maximum number of epochs for training
+LEARNING_RATE = 0.001             # Initial learning rate
+MOMENTUM = 0.9                    # Momentum (if using SGD)
+LOG_DIR = './runs'                # Directory for TensorBoard logs
+MODEL_SAVE_DIR = './models'       # Directory to save model checkpoints
+if not os.path.exists(MODEL_SAVE_DIR):
+    os.makedirs(MODEL_SAVE_DIR)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ==========================================================
+# Initialize TensorBoard Writer
+# ==========================================================
+writer = SummaryWriter(LOG_DIR)
+
+# ==========================================================
+# Data Augmentation and Transformation Definitions
+# ==========================================================
+# Training transforms include random cropping, random horizontal flipping, and normalization.
+train_transforms = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),  # Random crop with padding to add variety
+    transforms.RandomHorizontalFlip(),     # Flip images horizontally randomly
+    transforms.ToTensor(),                 # Convert image to PyTorch Tensor
+    transforms.Normalize((0.4914, 0.4822, 0.4465),
+                         (0.2023, 0.1994, 0.2010))  # Normalize with mean and std for CIFAR-10
+])
+
+# Testing transforms include only tensor conversion and normalization.
+test_transforms = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465),
+                         (0.2023, 0.1994, 0.2010))
+])
+
+# ==========================================================
+# Downloading and Preparing CIFAR-10 Dataset
+# ==========================================================
+# Download CIFAR-10 for training and testing.
+train_dataset = torchvision.datasets.CIFAR10(
+    root='./data', train=True, download=True, transform=train_transforms)
+test_dataset = torchvision.datasets.CIFAR10(
+    root='./data', train=False, download=True, transform=test_transforms)
+
+# ==========================================================
+# Create a Validation Set from the Training Data
+# ==========================================================
+validation_split = 0.1  # 10% of training data for validation
+num_train = len(train_dataset)
+indices = list(range(num_train))
+split = int(np.floor(validation_split * num_train))
+np.random.shuffle(indices)
+train_idx, valid_idx = indices[split:], indices[:split]
+
+train_subset = Subset(train_dataset, train_idx)
+valid_subset = Subset(train_dataset, valid_idx)
+
+# DataLoader for training, validation, and testing
+train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+valid_loader = DataLoader(valid_subset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+
+# ==========================================================
+# Define CIFAR-10 Class Names
+# ==========================================================
+classes = ('airplane', 'automobile', 'bird', 'cat', 'deer',
+           'dog', 'frog', 'horse', 'ship', 'truck')
+
+# ==========================================================
+# Define the Enhanced Convolutional Neural Network (CNN) Model
+# ==========================================================
+class EnhancedCNN(nn.Module):
+    def __init__(self):
+        super(EnhancedCNN, self).__init__()
+        # ------------------------------------------------------
+        # Convolution Block 1: 3 -> 64 channels
+        # ------------------------------------------------------
+        self.conv_block1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),  # Input: 3 channels; Output: 64 channels
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1), # Additional conv layer
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),                          # Downsample by 2
+            nn.Dropout(0.25)                             # Dropout for regularization
+        )
+
+        # ------------------------------------------------------
+        # Convolution Block 2: 64 -> 128 channels
+        # ------------------------------------------------------
+        self.conv_block2 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(0.25)
+        )
+
+        # ------------------------------------------------------
+        # Convolution Block 3: 128 -> 256 channels
+        # ------------------------------------------------------
+        self.conv_block3 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(0.25)
+        )
+
+        # ------------------------------------------------------
+        # Fully Connected (FC) Layers
+        # ------------------------------------------------------
+        self.fc_layers = nn.Sequential(
+            nn.Linear(256 * 4 * 4, 512),   # After three poolings, feature maps are 4x4
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(512, NUM_CLASSES)    # Output layer: one node per class
+        )
+
+    def forward(self, x):
+        out = self.conv_block1(x)
+        out = self.conv_block2(out)
+        out = self.conv_block3(out)
+        out = out.view(out.size(0), -1)  # Flatten the tensor for the FC layers
+        out = self.fc_layers(out)
+        return out
+
+# Instantiate the model and move it to the configured device.
+model = EnhancedCNN().to(DEVICE)
+print(model)
+
+# ==========================================================
+# Loss Function and Optimizer Setup
+# ==========================================================
+criterion = nn.CrossEntropyLoss()  # Suitable for multi-class classification
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+
+# ==========================================================
+# Utility Function to Calculate Accuracy
+# ==========================================================
+def calculate_accuracy(outputs, labels):
+    """Calculate accuracy given model outputs and true labels."""
+    _, preds = torch.max(outputs, 1)
+    return torch.sum(preds == labels.data).item() / len(labels)
+
+# ==========================================================
+# Early Stopping Mechanism Definition
+# ==========================================================
+class EarlyStopping:
+    """
+    Early stops the training if validation loss doesn't improve
+    after a given patience.
+    """
+    def __init__(self, patience=10, verbose=False, delta=0):
+        self.patience = patience
+        self.verbose = verbose
+        self.delta = delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+        self.best_model_wts = None
+
+    def __call__(self, val_loss, model):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+            self.best_model_wts = copy.deepcopy(model.state_dict())
+        elif val_loss > self.best_loss - self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.best_model_wts = copy.deepcopy(model.state_dict())
+            self.counter = 0
+
+# Initialize the EarlyStopping object
+early_stopping = EarlyStopping(patience=10, verbose=True)
+
+# ==========================================================
+# Training Loop with Detailed Logging, Checkpointing, and Validation
+# ==========================================================
+def train_model(model, train_loader, valid_loader, criterion, optimizer, scheduler, num_epochs=NUM_EPOCHS):
+    """
+    Train the model and validate on a validation set with detailed logging.
+    The function records metrics, saves checkpoints, and uses early stopping.
+    """
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+    training_losses = []
+    validation_losses = []
+
+    for epoch in range(num_epochs):
+        epoch_start = time.time()
+        print("-" * 60)
+        print(f"Epoch {epoch+1}/{num_epochs}")
+
+        # ---------------------------
+        # Training Phase
+        # ---------------------------
+        model.train()
+        running_loss = 0.0
+        running_corrects = 0
+        total_samples = 0
+
+        for batch, (inputs, labels) in enumerate(train_loader):
+            inputs = inputs.to(DEVICE)
+            labels = labels.to(DEVICE)
+
+            # Zero the gradients for this batch
+            optimizer.zero_grad()
+
+            # Forward pass through the model
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+
+            # Backpropagation and optimization step
+            loss.backward()
+            optimizer.step()
+
+            # Update running metrics
+            running_loss += loss.item() * inputs.size(0)
+            running_corrects += torch.sum(torch.max(outputs, 1)[1] == labels).item()
+            total_samples += inputs.size(0)
+
+            # Batch-level logging every 50 batches
+            if (batch + 1) % 50 == 0:
+                batch_loss = running_loss / total_samples
+                batch_acc = running_corrects / total_samples
+                print(f"Epoch [{epoch+1}/{num_epochs}] Batch [{batch+1}/{len(train_loader)}]: "
+                      f"Loss: {batch_loss:.4f} Accuracy: {batch_acc:.4f}")
+
+        epoch_loss = running_loss / total_samples
+        epoch_acc = running_corrects / total_samples
+        training_losses.append(epoch_loss)
+        print(f"Training Loss: {epoch_loss:.4f} Accuracy: {epoch_acc:.4f}")
+        writer.add_scalar("Loss/train", epoch_loss, epoch)
+        writer.add_scalar("Accuracy/train", epoch_acc, epoch)
+
+        # ---------------------------
+        # Validation Phase
+        # ---------------------------
+        model.eval()
+        val_loss = 0.0
+        val_corrects = 0
+        total_val = 0
+        with torch.no_grad():
+            for inputs, labels in valid_loader:
+                inputs = inputs.to(DEVICE)
+                labels = labels.to(DEVICE)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * inputs.size(0)
+                val_corrects += torch.sum(torch.max(outputs, 1)[1] == labels).item()
+                total_val += inputs.size(0)
+
+        epoch_val_loss = val_loss / total_val
+        epoch_val_acc = val_corrects / total_val
+        validation_losses.append(epoch_val_loss)
+        print(f"Validation Loss: {epoch_val_loss:.4f} Accuracy: {epoch_val_acc:.4f}")
+        writer.add_scalar("Loss/validation", epoch_val_loss, epoch)
+        writer.add_scalar("Accuracy/validation", epoch_val_acc, epoch)
+
+        # ---------------------------
+        # Adjust Learning Rate and Save Checkpoint
+        # ---------------------------
+        scheduler.step(epoch_val_loss)
+        checkpoint_path = os.path.join(MODEL_SAVE_DIR, f"checkpoint_epoch_{epoch+1}.pth")
+        torch.save(model.state_dict(), checkpoint_path)
+        print(f"Saved checkpoint: {checkpoint_path}")
+
+        # ---------------------------
+        # Early Stopping Check
+        # ---------------------------
+        early_stopping(epoch_val_loss, model)
+        if early_stopping.early_stop:
+            print("Early stopping triggered. Ending training.")
+            break
+
+        # Record the best model
+        if epoch_val_acc > best_acc:
+            best_acc = epoch_val_acc
+            best_model_wts = copy.deepcopy(model.state_dict())
+
+        epoch_time = time.time() - epoch_start
+        print(f"Epoch duration: {epoch_time:.2f} seconds")
+
+    # Load best model weights and return training details
+    model.load_state_dict(best_model_wts)
+    return model, training_losses, validation_losses
+
+# Call the training function to train the model
+trained_model, train_losses, val_losses = train_model(model, train_loader, valid_loader, criterion, optimizer, scheduler, num_epochs=NUM_EPOCHS)
+
+# ==========================================================
+# Plotting Loss Curves for Training and Validation
+# ==========================================================
+def plot_metrics(train_losses, val_losses):
+    """Plot and save the training and validation loss curves."""
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure(figsize=(10,6))
+    plt.plot(epochs, train_losses, 'b', label="Training Loss")
+    plt.plot(epochs, val_losses, 'r', label="Validation Loss")
+    plt.title("Training vs. Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig("loss_curve.png")
+    plt.show()
+
+plot_metrics(train_losses, val_losses)
+
+# ==========================================================
+# Detailed Evaluation on the Test Set
+# ==========================================================
+def evaluate_model(model, data_loader, criterion, dataset_type="Test"):
+    """
+    Evaluate the model on a given dataset loader.
+    Returns the average loss, accuracy, and all predictions/labels.
+    """
+    model.eval()
+    running_loss = 0.0
+    running_corrects = 0
+    total_samples = 0
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for inputs, labels in data_loader:
+            inputs = inputs.to(DEVICE)
+            labels = labels.to(DEVICE)
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item() * inputs.size(0)
+            preds = torch.max(outputs, 1)[1]
+            running_corrects += torch.sum(preds == labels).item()
+            total_samples += inputs.size(0)
+            all_preds.append(preds.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
+
+    final_loss = running_loss / total_samples
+    final_accuracy = running_corrects / total_samples
+    print(f"{dataset_type} Set - Loss: {final_loss:.4f} Accuracy: {final_accuracy:.4f}")
+    return final_loss, final_accuracy, np.concatenate(all_preds), np.concatenate(all_labels)
+
+test_loss, test_acc, test_preds, test_true = evaluate_model(trained_model, test_loader, criterion, dataset_type="Test")
+
+# ==========================================================
+# Save the Final Trained Model
+# ==========================================================
+final_model_path = os.path.join(MODEL_SAVE_DIR, "final_enhanced_cnn.pth")
+torch.save(trained_model.state_dict(), final_model_path)
+print(f"Final trained model saved to: {final_model_path}")
+
+# ==========================================================
+# Visualizing Predictions on Test Images
+# ==========================================================
+def imshow(img, title=None):
+    """Display a given image using matplotlib."""
+    img = img / 2 + 0.5  # Unnormalize
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
+    if title is not None:
+        plt.title(title)
+    plt.show()
+
+# Retrieve a batch of test images and display predictions
+dataiter = iter(test_loader)
+images, labels = dataiter.next()
+images, labels = images.to(DEVICE), labels.to(DEVICE)
+outputs = trained_model(images)
+_, preds = torch.max(outputs, 1)
+
+# Display images and print ground truth and predicted classes for the first 8 examples
+imshow(torchvision.utils.make_grid(images.cpu()))
+print("GroundTruth: ", ' '.join(f"{classes[labels[j]]}" for j in range(8)))
+print("Predicted: ", ' '.join(f"{classes[preds[j]]}" for j in range(8)))
+
+# ==========================================================
+# Additional Utility: Learning Rate Exploration
+# ==========================================================
+def explore_learning_rates(model, train_loader, criterion, optimizer, lr_range=[1e-5, 1e-2]):
+    """
+    Explore a range of learning rates to see their effect on the loss.
+    Returns the learning rates and corresponding losses.
+    """
+    lr_values = np.logspace(np.log10(lr_range[0]), np.log10(lr_range[1]), num=10)
+    losses = []
+    model_copy = copy.deepcopy(model)
+    for lr in lr_values:
+        optimizer_temp = optim.Adam(model_copy.parameters(), lr=lr)
+        running_loss = 0.0
+        for i, (inputs, labels) in enumerate(train_loader):
+            if i == 10:  # Limit to 10 batches
+                break
+            inputs = inputs.to(DEVICE)
+            labels = labels.to(DEVICE)
+            optimizer_temp.zero_grad()
+            outputs = model_copy(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer_temp.step()
+            running_loss += loss.item()
+        avg_loss = running_loss / 10
+        losses.append(avg_loss)
+        print(f"Learning Rate: {lr:.6f}, Loss: {avg_loss:.4f}")
+    return lr_values, losses
+
+lr_vals, loss_vals = explore_learning_rates(trained_model, train_loader, criterion, optimizer)
+
+# Plot learning rate exploration results
+plt.figure(figsize=(8,6))
+plt.plot(lr_vals, loss_vals, marker='o')
+plt.xscale('log')
+plt.xlabel("Learning Rate")
+plt.ylabel("Loss")
+plt.title("Learning Rate Exploration")
+plt.savefig("learning_rate_exploration.png")
+plt.show()
+
+# ==========================================================
+# Additional Module: Custom Dataset Wrapper for CIFAR-10
+# ==========================================================
+class CustomCIFAR10Dataset(Dataset):
+    """
+    Custom dataset for CIFAR-10 that returns extra debugging metadata.
+    """
+    def __init__(self, root, train=True, transform=None):
+        self.data = torchvision.datasets.CIFAR10(root=root, train=train, download=True, transform=transform)
+        self.train = train
+        print(f"CustomCIFAR10Dataset initialized. Train={train}. Samples: {len(self.data)}")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        image, label = self.data[idx]
+        # Add metadata for debugging purposes
+        metadata = {"index": idx}
+        return image, label, metadata
+
+custom_train_dataset = CustomCIFAR10Dataset(root='./data', train=True, transform=train_transforms)
+custom_train_loader = DataLoader(custom_train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+
+# Iterate through a few samples in the custom dataset to print metadata
+print("Iterating through custom dataset samples:")
+for i in range(5):
+    img, label, metadata = custom_train_dataset[i]
+    print(f"Sample {i}: Label: {label}, Metadata: {metadata}")
+
+# ==========================================================
+# Additional Module: Model Saving and Loading Utilities
+# ==========================================================
+def save_model(model, path):
+    """Utility function to save the model state dictionary."""
+    torch.save(model.state_dict(), path)
+    print(f"Model saved at: {path}")
+
+def load_model(model, path):
+    """Utility function to load the model state dictionary."""
+    model.load_state_dict(torch.load(path))
+    model.to(DEVICE)
+    print(f"Model loaded from: {path}")
+    return model
+
+# Demonstrate saving and loading the model
+temp_model_path = os.path.join(MODEL_SAVE_DIR, "temp_model.pth")
+save_model(trained_model, temp_model_path)
+loaded_model = load_model(EnhancedCNN(), temp_model_path)
+
+# ==========================================================
+# Additional Module: Inference Utility Function
+# ==========================================================
+def run_inference(model, image_tensor):
+    """
+    Perform inference on a single image tensor.
+    The image_tensor should be of shape (3, 32, 32) and preprocessed.
+    Returns the predicted class index.
+    """
+    model.eval()
+    if image_tensor.dim() == 3:
+        image_tensor = image_tensor.unsqueeze(0)
+    with torch.no_grad():
+        image_tensor = image_tensor.to(DEVICE)
+        outputs = model(image_tensor)
+        _, pred = torch.max(outputs, 1)
+    return pred.item()
+
+# Run inference on a random test image sample
+sample_img, sample_label = test_dataset[0]
+predicted_class = run_inference(trained_model, sample_img)
+print("Inference on sample image:")
+print(f"Actual Label: {classes[sample_label]}, Predicted Label: {classes[predicted_class]}")
+
+# ==========================================================
+# Additional Module: Logging Training Details to a File
+# ==========================================================
+log_file_path = "training_log.txt"
+with open(log_file_path, "w") as log_file:
+    log_file.write("Training Log Details:\n")
+    log_file.write("Epoch\tTraining Loss\tValidation Loss\n")
+    for i in range(len(train_losses)):
+        log_file.write(f"{i+1}\t{train_losses[i]:.4f}\t{val_losses[i]:.4f}\n")
+
+print(f"Training details logged in: {log_file_path}")
+
+# ==========================================================
+# Additional Module: Advanced Data Augmentation Example
+# ==========================================================
+advanced_train_transforms = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+    transforms.RandomRotation(15),
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465),
+                         (0.2023, 0.1994, 0.2010))
+])
+
+advanced_train_dataset = torchvision.datasets.CIFAR10(
+    root='./data', train=True, download=True, transform=advanced_train_transforms)
+advanced_train_loader = DataLoader(advanced_train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+
+# ==========================================================
+# Additional Module: Retraining Model with Advanced Augmentations
+# ==========================================================
+def retrain_with_advanced_augmentations(model, train_loader, valid_loader, criterion, optimizer, scheduler, num_epochs=10):
+    """
+    Retrain the model using advanced data augmentations.
+    Returns the retrained model and its training/validation loss histories.
+    """
+    print("Starting retraining with advanced data augmentations...")
+    model_copy = copy.deepcopy(model)
+    retrain_losses = []
+    retrain_val_losses = []
+    for epoch in range(num_epochs):
+        epoch_start = time.time()
+        print("-" * 60)
+        print(f"Advanced Augmentation Epoch {epoch+1}/{num_epochs}")
+
+        # Training phase for retraining
+        model_copy.train()
+        running_loss = 0.0
+        running_corrects = 0
+        total_samples = 0
+
+        for batch, (inputs, labels) in enumerate(train_loader):
+            inputs = inputs.to(DEVICE)
+            labels = labels.to(DEVICE)
+            optimizer.zero_grad()
+            outputs = model_copy(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item() * inputs.size(0)
+            running_corrects += torch.sum(torch.max(outputs, 1)[1] == labels).item()
+            total_samples += inputs.size(0)
+
+        epoch_loss = running_loss / total_samples
+        retrain_losses.append(epoch_loss)
+        epoch_acc = running_corrects / total_samples
+        print(f"Advanced Aug Epoch {epoch+1}: Loss: {epoch_loss:.4f} Accuracy: {epoch_acc:.4f}")
+        writer.add_scalar("Loss/advanced_train", epoch_loss, epoch)
+        writer.add_scalar("Accuracy/advanced_train", epoch_acc, epoch)
+
+        # Validation phase for retraining
+        model_copy.eval()
+        val_loss = 0.0
+        val_corrects = 0
+        total_val = 0
+        with torch.no_grad():
+            for inputs, labels in valid_loader:
+                inputs = inputs.to(DEVICE)
+                labels = labels.to(DEVICE)
+                outputs = model_copy(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * inputs.size(0)
+                val_corrects += torch.sum(torch.max(outputs, 1)[1] == labels).item()
+                total_val += inputs.size(0)
+        epoch_val_loss = val_loss / total_val
+        retrain_val_losses.append(epoch_val_loss)
+        epoch_val_acc = val_corrects / total_val
+        print(f"Advanced Aug Validation Epoch {epoch+1}: Loss: {epoch_val_loss:.4f} Accuracy: {epoch_val_acc:.4f}")
+        scheduler.step(epoch_val_loss)
+        epoch_time = time.time() - epoch_start
+        print(f"Epoch duration: {epoch_time:.2f} seconds")
+
+    return model_copy, retrain_losses, retrain_val_losses
+
+advanced_model, adv_train_losses, adv_val_losses = retrain_with_advanced_augmentations(
+    trained_model, advanced_train_loader, valid_loader, criterion, optimizer, scheduler, num_epochs=10)
+
+# ==========================================================
+# Final Plotting for Retraining with Advanced Augmentations
+# ==========================================================
+def plot_advanced_metrics(train_losses, val_losses):
+    """Plot and save loss curves for retraining with advanced augmentations."""
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure(figsize=(10,6))
+    plt.plot(epochs, train_losses, 'g', label="Advanced Training Loss")
+    plt.plot(epochs, val_losses, 'm', label="Advanced Validation Loss")
+    plt.title("Advanced Training vs. Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig("advanced_loss_curve.png")
+    plt.show()
+
+plot_advanced_metrics(adv_train_losses, adv_val_losses)
+
+# ==========================================================
+# End of Project Script
+# ==========================================================
+print("Deep Learning Project Completed Successfully")
